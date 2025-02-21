@@ -1,22 +1,38 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package main
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"slices"
 	"strings"
 
+	"github.com/prometheus/common/promslog"
+	promslogflag "github.com/prometheus/common/promslog/flag"
+	"github.com/prometheus/common/version"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/sync/semaphore"
 
-	exporter "github.com/nerdswords/yet-another-cloudwatch-exporter/pkg"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/clients/cloudwatch"
-	v1 "github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/clients/v1"
-	v2 "github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/clients/v2"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/config"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/logging"
+	exporter "github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/clients/cloudwatch"
+	v1 "github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/clients/v1"
+	v2 "github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/clients/v2"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/config"
 )
 
 const (
@@ -33,8 +49,6 @@ Version: %s
 	htmlPprof = `<p><a href="/debug/pprof">Pprof</a><p>`
 )
 
-var version = "custom-build"
-
 var sem = semaphore.NewWeighted(1)
 
 const (
@@ -44,7 +58,7 @@ const (
 var (
 	addr                  string
 	configFile            string
-	debug                 bool
+	logLevel              string
 	logFormat             string
 	fips                  bool
 	cloudwatchConcurrency cloudwatch.ConcurrencyConfig
@@ -54,7 +68,7 @@ var (
 	labelsSnakeCase       bool
 	profilingEnabled      bool
 
-	logger logging.Logger
+	logger *slog.Logger
 )
 
 func main() {
@@ -62,9 +76,11 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		// if we exit very early we'll not have set up the logger yet
 		if logger == nil {
-			logger = logging.NewLogger(defaultLogFormat, debug, "version", version)
+			jsonFmt := &promslog.AllowedFormat{}
+			_ = jsonFmt.Set("json")
+			logger = promslog.New(&promslog.Config{Format: jsonFmt})
 		}
-		logger.Error(err, "Error running yace")
+		logger.Error("Error running yace", "err", err)
 		os.Exit(1)
 	}
 }
@@ -73,7 +89,7 @@ func main() {
 func NewYACEApp() *cli.App {
 	yace := cli.NewApp()
 	yace.Name = "Yet Another CloudWatch Exporter"
-	yace.Version = version
+	yace.Version = version.Version
 	yace.Usage = "YACE configured to retrieve CloudWatch metrics through the AWS API"
 	yace.Description = ""
 	yace.Authors = []*cli.Author{
@@ -95,23 +111,25 @@ func NewYACEApp() *cli.App {
 			Destination: &configFile,
 			EnvVars:     []string{"config.file"},
 		},
-		&cli.BoolFlag{
-			Name:        "debug",
-			Value:       false,
-			Usage:       "Verbose logging",
-			Destination: &debug,
-			EnvVars:     []string{"debug"},
+		&cli.StringFlag{
+			Name:        "log.level",
+			Value:       "",
+			Usage:       promslogflag.LevelFlagHelp,
+			Destination: &logLevel,
+			Action: func(_ *cli.Context, s string) error {
+				if !slices.Contains(promslog.LevelFlagOptions, s) {
+					return fmt.Errorf("unrecognized log format %q", s)
+				}
+				return nil
+			},
 		},
 		&cli.StringFlag{
 			Name:        "log.format",
 			Value:       defaultLogFormat,
-			Usage:       "Output format of log messages. One of: [logfmt, json]. Default: [json].",
+			Usage:       promslogflag.FormatFlagHelp,
 			Destination: &logFormat,
-			Action: func(ctx *cli.Context, s string) error {
-				switch s {
-				case "logfmt", "json":
-					break
-				default:
+			Action: func(_ *cli.Context, s string) error {
+				if !slices.Contains(promslog.FormatFlagOptions, s) {
 					return fmt.Errorf("unrecognized log format %q", s)
 				}
 				return nil
@@ -199,12 +217,12 @@ func NewYACEApp() *cli.App {
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "config.file", Value: "config.yml", Usage: "Path to configuration file.", Destination: &configFile},
 			},
-			Action: func(c *cli.Context) error {
-				logger = logging.NewLogger(logFormat, debug, "version", version)
+			Action: func(_ *cli.Context) error {
+				logger = newLogger(logFormat, logLevel).With("version", version.Version)
 				logger.Info("Parsing config")
 				cfg := config.ScrapeConf{}
 				if _, err := cfg.Load(configFile, logger); err != nil {
-					logger.Error(err, "Couldn't read config file", "path", configFile)
+					logger.Error("Couldn't read config file", "err", err, "path", configFile)
 					os.Exit(1)
 				}
 				logger.Info("Config file is valid", "path", configFile)
@@ -216,8 +234,8 @@ func NewYACEApp() *cli.App {
 			Name:    "version",
 			Aliases: []string{"v"},
 			Usage:   "prints current yace version.",
-			Action: func(c *cli.Context) error {
-				fmt.Println(version)
+			Action: func(_ *cli.Context) error {
+				fmt.Println(version.Version)
 				os.Exit(0)
 				return nil
 			},
@@ -230,7 +248,7 @@ func NewYACEApp() *cli.App {
 }
 
 func startScraper(c *cli.Context) error {
-	logger = logging.NewLogger(logFormat, debug, "version", version)
+	logger = newLogger(logFormat, logLevel).With("version", version.Version)
 
 	// log warning if the two concurrency limiting methods are configured via CLI
 	if c.IsSet("cloudwatch-concurrency") && c.IsSet("cloudwatch-concurrency.per-api-limit-enabled") {
@@ -247,15 +265,18 @@ func startScraper(c *cli.Context) error {
 
 	featureFlags := c.StringSlice(enableFeatureFlag)
 	s := NewScraper(featureFlags)
-	var cache cachingFactory = v1.NewFactory(logger, jobsCfg, fips)
+
+	var cache cachingFactory
+	cache, err = v2.NewFactory(logger, jobsCfg, fips)
+	if err != nil {
+		return fmt.Errorf("Failed to construct aws sdk v2 client cache: %w", err)
+	}
+
+	// Switch to v1 SDK if feature flag is enabled
 	for _, featureFlag := range featureFlags {
-		if featureFlag == config.AwsSdkV2 {
-			var err error
-			// Can't override cache while also creating err
-			cache, err = v2.NewFactory(logger, jobsCfg, fips)
-			if err != nil {
-				return fmt.Errorf("failed to construct aws sdk v2 client cache: %w", err)
-			}
+		if featureFlag == config.AwsSdkV1 {
+			cache = v1.NewFactory(logger, jobsCfg, fips)
+			logger.Info("Using aws sdk v1")
 		}
 	}
 
@@ -274,16 +295,16 @@ func startScraper(c *cli.Context) error {
 
 	mux.HandleFunc("/metrics", s.makeHandler())
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		pprofLink := ""
 		if profilingEnabled {
 			pprofLink = htmlPprof
 		}
 
-		_, _ = w.Write([]byte(fmt.Sprintf(htmlVersion, version, pprofLink)))
+		_, _ = w.Write([]byte(fmt.Sprintf(htmlVersion, version.Version, pprofLink)))
 	})
 
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -298,22 +319,23 @@ func startScraper(c *cli.Context) error {
 		newCfg := config.ScrapeConf{}
 		newJobsCfg, err := newCfg.Load(configFile, logger)
 		if err != nil {
-			logger.Error(err, "Couldn't read config file", "path", configFile)
+			logger.Error("Couldn't read config file", "err", err, "path", configFile)
 			return
 		}
 
 		logger.Info("Reset clients cache")
-		cache = v1.NewFactory(logger, newJobsCfg, fips)
+		var cache cachingFactory
+		cache, err = v2.NewFactory(logger, newJobsCfg, fips)
+		if err != nil {
+			logger.Error("Failed to construct aws sdk v2 client cache", "err", err, "path", configFile)
+			return
+		}
+
+		// Switch to v1 SDK if feature flag is enabled
 		for _, featureFlag := range featureFlags {
-			if featureFlag == config.AwsSdkV2 {
-				logger.Info("Using aws sdk v2")
-				var err error
-				// Can't override cache while also creating err
-				cache, err = v2.NewFactory(logger, newJobsCfg, fips)
-				if err != nil {
-					logger.Error(err, "Failed to construct aws sdk v2 client cache", "path", configFile)
-					return
-				}
+			if featureFlag == config.AwsSdkV1 {
+				cache = v1.NewFactory(logger, newJobsCfg, fips)
+				logger.Info("Using aws sdk v1")
 			}
 		}
 
@@ -322,8 +344,21 @@ func startScraper(c *cli.Context) error {
 		go s.decoupled(ctx, logger, newJobsCfg, cache)
 	})
 
-	logger.Info("Yace startup completed", "version", version, "feature_flags", strings.Join(featureFlags, ","))
+	logger.Info("Yace startup completed", "build_info", version.Info(), "build_context", version.BuildContext(), "feature_flags", strings.Join(featureFlags, ","))
 
 	srv := &http.Server{Addr: addr, Handler: mux}
 	return srv.ListenAndServe()
+}
+
+func newLogger(format, level string) *slog.Logger {
+	// If flag parsing was successful, then we know that format and level
+	// are both valid options; no need to error check their returns, just
+	// set their values.
+	f := &promslog.AllowedFormat{}
+	_ = f.Set(format)
+
+	lvl := &promslog.AllowedLevel{}
+	_ = lvl.Set(level)
+
+	return promslog.New(&promslog.Config{Format: f, Level: lvl})
 }

@@ -1,8 +1,21 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package v2
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/amp"
@@ -12,18 +25,18 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi"
+	"github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi/types"
 	"github.com/aws/aws-sdk-go-v2/service/shield"
 	"github.com/aws/aws-sdk-go-v2/service/storagegateway"
 
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/clients/tagging"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/config"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/logging"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/promutil"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/clients/tagging"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/config"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/promutil"
 )
 
 type client struct {
-	logger            logging.Logger
+	logger            *slog.Logger
 	taggingAPI        *resourcegroupstaggingapi.Client
 	autoscalingAPI    *autoscaling.Client
 	apiGatewayAPI     *apigateway.Client
@@ -36,7 +49,7 @@ type client struct {
 }
 
 func NewClient(
-	logger logging.Logger,
+	logger *slog.Logger,
 	taggingAPI *resourcegroupstaggingapi.Client,
 	autoscalingAPI *autoscaling.Client,
 	apiGatewayAPI *apigateway.Client,
@@ -62,7 +75,7 @@ func NewClient(
 }
 
 func (c client) GetResources(ctx context.Context, job model.DiscoveryJob, region string) ([]*model.TaggedResource, error) {
-	svc := config.SupportedServices.GetService(job.Type)
+	svc := config.SupportedServices.GetService(job.Namespace)
 	var resources []*model.TaggedResource
 	shouldHaveDiscoveredResources := false
 
@@ -72,9 +85,25 @@ func (c client) GetResources(ctx context.Context, job model.DiscoveryJob, region
 		for _, filter := range svc.ResourceFilters {
 			filters = append(filters, *filter)
 		}
+		var tagFilters []types.TagFilter
+		if len(job.SearchTags) > 0 {
+			for i := range job.SearchTags {
+				// Because everything with the AWS APIs is pointers we need a pointer to the `Key` field from the SearchTag.
+				// We can't take a pointer to any fields from loop variable or the pointer will always be the same and this logic will be broken.
+				st := job.SearchTags[i]
+
+				// AWS's GetResources has a TagFilter option which matches the semantics of our SearchTags where all filters must match
+				// Their value matching implementation is different though so instead of mapping the Key and Value we only map the Keys.
+				// Their API docs say, "If you don't specify a value for a key, the response returns all resources that are tagged with that key, with any or no value."
+				// which makes this a safe way to reduce the amount of data we need to filter out.
+				// https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/API_GetResources.html#resourcegrouptagging-GetResources-request-TagFilters
+				tagFilters = append(tagFilters, types.TagFilter{Key: &st.Key})
+			}
+		}
 		inputparams := &resourcegroupstaggingapi.GetResourcesInput{
 			ResourceTypeFilters: filters,
 			ResourcesPerPage:    aws.Int32(int32(100)), // max allowed value according to API docs
+			TagFilters:          tagFilters,
 		}
 
 		paginator := resourcegroupstaggingapi.NewGetResourcesPaginator(c.taggingAPI, inputparams, func(options *resourcegroupstaggingapi.GetResourcesPaginatorOptions) {
@@ -90,7 +119,7 @@ func (c client) GetResources(ctx context.Context, job model.DiscoveryJob, region
 			for _, resourceTagMapping := range page.ResourceTagMappingList {
 				resource := model.TaggedResource{
 					ARN:       *resourceTagMapping.ResourceARN,
-					Namespace: job.Type,
+					Namespace: job.Namespace,
 					Region:    region,
 					Tags:      make([]model.Tag, 0, len(resourceTagMapping.Tags)),
 				}

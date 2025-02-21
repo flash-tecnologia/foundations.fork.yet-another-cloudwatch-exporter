@@ -1,6 +1,19 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package v2
 
 import (
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -9,69 +22,24 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 
-	cloudwatch_client "github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/clients/cloudwatch"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/logging"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/promutil"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/promutil"
 )
 
-func createGetMetricDataInput(logger logging.Logger, getMetricData []*model.CloudwatchData, namespace *string, length int64, delay int64, configuredRoundingPeriod *int64) *cloudwatch.GetMetricDataInput {
-	metricsDataQuery := make([]types.MetricDataQuery, 0, len(getMetricData))
-	roundingPeriod := model.DefaultPeriodSeconds
-	for _, data := range getMetricData {
-		if data.Period < roundingPeriod {
-			roundingPeriod = data.Period
-		}
-		metricStat := &types.MetricStat{
-			Metric: &types.Metric{
-				Dimensions: toCloudWatchDimensions(data.Dimensions),
-				MetricName: data.Metric,
-				Namespace:  namespace,
-			},
-			Period: aws.Int32(int32(data.Period)),
-			Stat:   &data.Statistics[0],
-		}
-		metricsDataQuery = append(metricsDataQuery, types.MetricDataQuery{
-			Id:         data.MetricID,
-			MetricStat: metricStat,
-			ReturnData: aws.Bool(true),
-		})
-	}
-
-	if configuredRoundingPeriod != nil {
-		roundingPeriod = *configuredRoundingPeriod
-	}
-
-	startTime, endTime := cloudwatch_client.DetermineGetMetricDataWindow(
-		cloudwatch_client.TimeClock{},
-		time.Duration(roundingPeriod)*time.Second,
-		time.Duration(length)*time.Second,
-		time.Duration(delay)*time.Second)
-
-	if logger.IsDebugEnabled() {
-		logger.Debug("GetMetricData Window", "start_time", startTime.Format(cloudwatch_client.TimeFormat), "end_time", endTime.Format(cloudwatch_client.TimeFormat))
-	}
-
-	return &cloudwatch.GetMetricDataInput{
-		EndTime:           &endTime,
-		StartTime:         &startTime,
-		MetricDataQueries: metricsDataQuery,
-		ScanBy:            "TimestampDescending",
-	}
-}
-
-func toCloudWatchDimensions(dimensions []*model.Dimension) []types.Dimension {
+func toCloudWatchDimensions(dimensions []model.Dimension) []types.Dimension {
 	cwDim := make([]types.Dimension, 0, len(dimensions))
 	for _, dim := range dimensions {
+		// Don't take pointers directly to loop variables
+		cDim := dim
 		cwDim = append(cwDim, types.Dimension{
-			Name:  &dim.Name,
-			Value: &dim.Value,
+			Name:  &cDim.Name,
+			Value: &cDim.Value,
 		})
 	}
 	return cwDim
 }
 
-func createGetMetricStatisticsInput(logger logging.Logger, dimensions []*model.Dimension, namespace *string, metric *model.MetricConfig) *cloudwatch.GetMetricStatisticsInput {
+func createGetMetricStatisticsInput(logger *slog.Logger, dimensions []model.Dimension, namespace *string, metric *model.MetricConfig) *cloudwatch.GetMetricStatisticsInput {
 	period := metric.Period
 	length := metric.Length
 	delay := metric.Delay
@@ -99,24 +67,22 @@ func createGetMetricStatisticsInput(logger logging.Logger, dimensions []*model.D
 		ExtendedStatistics: extendedStatistics,
 	}
 
-	if logger.IsDebugEnabled() {
-		logger.Debug("CLI helper - " +
-			"aws cloudwatch get-metric-statistics" +
-			" --metric-name " + metric.Name +
-			" --dimensions " + dimensionsToCliString(dimensions) +
-			" --namespace " + *namespace +
-			" --statistics " + string(statistics[0]) +
-			" --period " + strconv.FormatInt(period, 10) +
-			" --start-time " + startTime.Format(time.RFC3339) +
-			" --end-time " + endTime.Format(time.RFC3339))
+	logger.Debug("CLI helper - " +
+		"aws cloudwatch get-metric-statistics" +
+		" --metric-name " + metric.Name +
+		" --dimensions " + dimensionsToCliString(dimensions) +
+		" --namespace " + *namespace +
+		" --statistics " + string(statistics[0]) +
+		" --period " + strconv.FormatInt(period, 10) +
+		" --start-time " + startTime.Format(time.RFC3339) +
+		" --end-time " + endTime.Format(time.RFC3339))
 
-		logger.Debug("createGetMetricStatisticsInput", "output", *output)
-	}
+	logger.Debug("createGetMetricStatisticsInput", "output", *output)
 
 	return output
 }
 
-func dimensionsToCliString(dimensions []*model.Dimension) string {
+func dimensionsToCliString(dimensions []model.Dimension) string {
 	out := strings.Builder{}
 	for _, dim := range dimensions {
 		out.WriteString("Name=")

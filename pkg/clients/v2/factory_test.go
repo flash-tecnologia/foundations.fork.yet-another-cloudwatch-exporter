@@ -1,9 +1,23 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package v2
 
 import (
 	"context"
+	"log/slog"
 	"reflect"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -14,13 +28,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/databasemigrationservice"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi"
+	"github.com/aws/aws-sdk-go-v2/service/storagegateway"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/prometheus/common/promslog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	cloudwatch_client "github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/clients/cloudwatch"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/logging"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
+	cloudwatch_client "github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/clients/cloudwatch"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
 )
 
 var jobsCfgWithDefaultRoleAndRegion1 = model.JobsConfig{
@@ -106,7 +121,7 @@ func TestNewFactory_initializes_clients(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			output, err := NewFactory(logging.NewNopLogger(), test.jobsCfg, false)
+			output, err := NewFactory(promslog.NewNopLogger(), test.jobsCfg, false)
 			require.NoError(t, err)
 
 			assert.False(t, output.refreshed)
@@ -148,7 +163,7 @@ func TestNewFactory_respects_stsregion(t *testing.T) {
 		}},
 	}
 
-	output, err := NewFactory(logging.NewNopLogger(), cfg, false)
+	output, err := NewFactory(promslog.NewNopLogger(), cfg, false)
 	require.NoError(t, err)
 	require.Len(t, output.clients, 1)
 	stsOptions := sts.Options{}
@@ -158,7 +173,7 @@ func TestNewFactory_respects_stsregion(t *testing.T) {
 
 func TestCachingFactory_Clear(t *testing.T) {
 	cache := &CachingFactory{
-		logger: logging.NewNopLogger(),
+		logger: promslog.NewNopLogger(),
 		clients: map[model.Role]map[awsRegion]*cachedClients{
 			defaultRole: {
 				"region1": &cachedClients{
@@ -186,7 +201,7 @@ func TestCachingFactory_Clear(t *testing.T) {
 
 func TestCachingFactory_Refresh(t *testing.T) {
 	t.Run("creates all clients when config contains only discovery jobs", func(t *testing.T) {
-		output, err := NewFactory(logging.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, false)
+		output, err := NewFactory(promslog.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, false)
 		require.NoError(t, err)
 
 		output.Refresh()
@@ -212,7 +227,7 @@ func TestCachingFactory_Refresh(t *testing.T) {
 			}},
 		}
 
-		output, err := NewFactory(logging.NewNopLogger(), jobsCfg, false)
+		output, err := NewFactory(promslog.NewNopLogger(), jobsCfg, false)
 		require.NoError(t, err)
 
 		output.Refresh()
@@ -236,7 +251,7 @@ func TestCachingFactory_GetAccountClient(t *testing.T) {
 			}},
 		}
 
-		output, err := NewFactory(logging.NewNopLogger(), jobsCfg, false)
+		output, err := NewFactory(promslog.NewNopLogger(), jobsCfg, false)
 		require.NoError(t, err)
 
 		output.Refresh()
@@ -254,7 +269,7 @@ func TestCachingFactory_GetAccountClient(t *testing.T) {
 			}},
 		}
 
-		output, err := NewFactory(logging.NewNopLogger(), jobsCfg, false)
+		output, err := NewFactory(promslog.NewNopLogger(), jobsCfg, false)
 		require.NoError(t, err)
 
 		clients := output.clients[defaultRole]["region1"]
@@ -275,7 +290,7 @@ func TestCachingFactory_GetCloudwatchClient(t *testing.T) {
 			}},
 		}
 
-		output, err := NewFactory(logging.NewNopLogger(), jobsCfg, false)
+		output, err := NewFactory(promslog.NewNopLogger(), jobsCfg, false)
 		require.NoError(t, err)
 
 		output.Refresh()
@@ -294,7 +309,7 @@ func TestCachingFactory_GetCloudwatchClient(t *testing.T) {
 			}},
 		}
 
-		output, err := NewFactory(logging.NewNopLogger(), jobsCfg, false)
+		output, err := NewFactory(promslog.NewNopLogger(), jobsCfg, false)
 		require.NoError(t, err)
 
 		clients := output.clients[defaultRole]["region1"]
@@ -315,7 +330,7 @@ func TestCachingFactory_GetTaggingClient(t *testing.T) {
 			}},
 		}
 
-		output, err := NewFactory(logging.NewNopLogger(), jobsCfg, false)
+		output, err := NewFactory(promslog.NewNopLogger(), jobsCfg, false)
 		require.NoError(t, err)
 
 		output.Refresh()
@@ -334,7 +349,7 @@ func TestCachingFactory_GetTaggingClient(t *testing.T) {
 			}},
 		}
 
-		output, err := NewFactory(logging.NewNopLogger(), jobsCfg, false)
+		output, err := NewFactory(promslog.NewNopLogger(), jobsCfg, false)
 		require.NoError(t, err)
 
 		clients := output.clients[defaultRole]["region1"]
@@ -347,7 +362,7 @@ func TestCachingFactory_GetTaggingClient(t *testing.T) {
 }
 
 func TestCachingFactory_createTaggingClient_DoesNotEnableFIPS(t *testing.T) {
-	factory, err := NewFactory(logging.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
+	factory, err := NewFactory(promslog.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
 	require.NoError(t, err)
 
 	client := factory.createTaggingClient(factory.clients[defaultRole]["region1"].awsConfig)
@@ -359,47 +374,8 @@ func TestCachingFactory_createTaggingClient_DoesNotEnableFIPS(t *testing.T) {
 	assert.Equal(t, options.EndpointOptions.UseFIPSEndpoint, aws.FIPSEndpointStateUnset)
 }
 
-func TestCachingFactory_createAutoScalingClient_DoesNotEnableFIPS(t *testing.T) {
-	factory, err := NewFactory(logging.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
-	require.NoError(t, err)
-
-	client := factory.createAutoScalingClient(factory.clients[defaultRole]["region1"].awsConfig)
-	require.NotNil(t, client)
-
-	options := getOptions[autoscaling.Client, autoscaling.Options](client)
-	require.NotNil(t, options)
-
-	assert.Equal(t, options.EndpointOptions.UseFIPSEndpoint, aws.FIPSEndpointStateUnset)
-}
-
-func TestCachingFactory_createEC2Client_EnablesFIPS(t *testing.T) {
-	factory, err := NewFactory(logging.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
-	require.NoError(t, err)
-
-	client := factory.createEC2Client(factory.clients[defaultRole]["region1"].awsConfig)
-	require.NotNil(t, client)
-
-	options := getOptions[ec2.Client, ec2.Options](client)
-	require.NotNil(t, options)
-
-	assert.Equal(t, options.EndpointOptions.UseFIPSEndpoint, aws.FIPSEndpointStateEnabled)
-}
-
-func TestCachingFactory_createDMSClient_EnablesFIPS(t *testing.T) {
-	factory, err := NewFactory(logging.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
-	require.NoError(t, err)
-
-	client := factory.createDMSClient(factory.clients[defaultRole]["region1"].awsConfig)
-	require.NotNil(t, client)
-
-	options := getOptions[databasemigrationservice.Client, databasemigrationservice.Options](client)
-	require.NotNil(t, options)
-
-	assert.Equal(t, options.EndpointOptions.UseFIPSEndpoint, aws.FIPSEndpointStateEnabled)
-}
-
 func TestCachingFactory_createAPIGatewayClient_EnablesFIPS(t *testing.T) {
-	factory, err := NewFactory(logging.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
+	factory, err := NewFactory(promslog.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
 	require.NoError(t, err)
 
 	client := factory.createAPIGatewayClient(factory.clients[defaultRole]["region1"].awsConfig)
@@ -412,33 +388,72 @@ func TestCachingFactory_createAPIGatewayClient_EnablesFIPS(t *testing.T) {
 }
 
 func TestCachingFactory_createAPIGatewayV2Client_EnablesFIPS(t *testing.T) {
-	factory, err := NewFactory(logging.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
+	factory, err := NewFactory(promslog.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
 	require.NoError(t, err)
 
 	client := factory.createAPIGatewayV2Client(factory.clients[defaultRole]["region1"].awsConfig)
 	require.NotNil(t, client)
 
 	options := getOptions[apigatewayv2.Client, apigatewayv2.Options](client)
+	require.NotNil(t, options)
+
+	assert.Equal(t, options.EndpointOptions.UseFIPSEndpoint, aws.FIPSEndpointStateEnabled)
+}
+
+func TestCachingFactory_createAutoScalingClient_DoesNotEnableFIPS(t *testing.T) {
+	factory, err := NewFactory(promslog.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
+	require.NoError(t, err)
+
+	client := factory.createAutoScalingClient(factory.clients[defaultRole]["region1"].awsConfig)
+	require.NotNil(t, client)
+
+	options := getOptions[autoscaling.Client, autoscaling.Options](client)
+	require.NotNil(t, options)
+
+	assert.Equal(t, options.EndpointOptions.UseFIPSEndpoint, aws.FIPSEndpointStateUnset)
+}
+
+func TestCachingFactory_createEC2Client_EnablesFIPS(t *testing.T) {
+	factory, err := NewFactory(promslog.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
+	require.NoError(t, err)
+
+	client := factory.createEC2Client(factory.clients[defaultRole]["region1"].awsConfig)
+	require.NotNil(t, client)
+
+	options := getOptions[ec2.Client, ec2.Options](client)
+	require.NotNil(t, options)
+
+	assert.Equal(t, options.EndpointOptions.UseFIPSEndpoint, aws.FIPSEndpointStateEnabled)
+}
+
+func TestCachingFactory_createDMSClient_EnablesFIPS(t *testing.T) {
+	factory, err := NewFactory(promslog.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
+	require.NoError(t, err)
+
+	client := factory.createDMSClient(factory.clients[defaultRole]["region1"].awsConfig)
+	require.NotNil(t, client)
+
+	options := getOptions[databasemigrationservice.Client, databasemigrationservice.Options](client)
 	require.NotNil(t, options)
 
 	assert.Equal(t, options.EndpointOptions.UseFIPSEndpoint, aws.FIPSEndpointStateEnabled)
 }
 
 func TestCachingFactory_createStorageGatewayClient_EnablesFIPS(t *testing.T) {
-	factory, err := NewFactory(logging.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
+	factory, err := NewFactory(promslog.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
 	require.NoError(t, err)
 
-	client := factory.createAPIGatewayV2Client(factory.clients[defaultRole]["region1"].awsConfig)
+	client := factory.createStorageGatewayClient(factory.clients[defaultRole]["region1"].awsConfig)
 	require.NotNil(t, client)
 
-	options := getOptions[apigatewayv2.Client, apigatewayv2.Options](client)
+	options := getOptions[storagegateway.Client, storagegateway.Options](client)
 	require.NotNil(t, options)
 
 	assert.Equal(t, options.EndpointOptions.UseFIPSEndpoint, aws.FIPSEndpointStateEnabled)
 }
 
 func TestCachingFactory_createPrometheusClient_DoesNotEnableFIPS(t *testing.T) {
-	factory, err := NewFactory(logging.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
+	factory, err := NewFactory(promslog.NewNopLogger(), jobsCfgWithDefaultRoleAndRegion1, true)
 	require.NoError(t, err)
 
 	client := factory.createPrometheusClient(factory.clients[defaultRole]["region1"].awsConfig)
@@ -469,14 +484,18 @@ func (t testClient) GetAccount(_ context.Context) (string, error) {
 	return "", nil
 }
 
+func (t testClient) GetAccountAlias(_ context.Context) (string, error) {
+	return "", nil
+}
+
 func (t testClient) ListMetrics(_ context.Context, _ string, _ *model.MetricConfig, _ bool, _ func(page []*model.Metric)) error {
 	return nil
 }
 
-func (t testClient) GetMetricData(_ context.Context, _ logging.Logger, _ []*model.CloudwatchData, _ string, _ int64, _ int64, _ *int64) []cloudwatch_client.MetricDataResult {
+func (t testClient) GetMetricData(_ context.Context, _ []*model.CloudwatchData, _ string, _ time.Time, _ time.Time) []cloudwatch_client.MetricDataResult {
 	return nil
 }
 
-func (t testClient) GetMetricStatistics(_ context.Context, _ logging.Logger, _ []*model.Dimension, _ string, _ *model.MetricConfig) []*model.Datapoint {
+func (t testClient) GetMetricStatistics(_ context.Context, _ *slog.Logger, _ []model.Dimension, _ string, _ *model.MetricConfig) []*model.Datapoint {
 	return nil
 }

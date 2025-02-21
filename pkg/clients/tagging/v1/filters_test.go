@@ -1,3 +1,15 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package v1
 
 import (
@@ -14,8 +26,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/databasemigrationservice"
 	"github.com/aws/aws-sdk-go/service/databasemigrationservice/databasemigrationserviceiface"
 
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/config"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/config"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
 )
 
 func TestValidServiceNames(t *testing.T) {
@@ -415,22 +427,6 @@ func TestDMSFilterFunc(t *testing.T) {
 	}
 }
 
-type dmsClient struct {
-	databasemigrationserviceiface.DatabaseMigrationServiceAPI
-	describeReplicationInstancesOutput *databasemigrationservice.DescribeReplicationInstancesOutput
-	describeReplicationTasksOutput     *databasemigrationservice.DescribeReplicationTasksOutput
-}
-
-func (dms dmsClient) DescribeReplicationInstancesPagesWithContext(_ aws.Context, _ *databasemigrationservice.DescribeReplicationInstancesInput, fn func(*databasemigrationservice.DescribeReplicationInstancesOutput, bool) bool, _ ...request.Option) error {
-	fn(dms.describeReplicationInstancesOutput, true)
-	return nil
-}
-
-func (dms dmsClient) DescribeReplicationTasksPagesWithContext(_ aws.Context, _ *databasemigrationservice.DescribeReplicationTasksInput, fn func(*databasemigrationservice.DescribeReplicationTasksOutput, bool) bool, _ ...request.Option) error {
-	fn(dms.describeReplicationTasksOutput, true)
-	return nil
-}
-
 type apiGatewayClient struct {
 	apigatewayiface.APIGatewayAPI
 	getRestApisOutput *apigateway.GetRestApisOutput
@@ -448,4 +444,20 @@ type apiGatewayV2Client struct {
 
 func (apigateway apiGatewayV2Client) GetApisWithContext(_ aws.Context, _ *apigatewayv2.GetApisInput, _ ...request.Option) (*apigatewayv2.GetApisOutput, error) {
 	return apigateway.getRestApisOutput, nil
+}
+
+type dmsClient struct {
+	databasemigrationserviceiface.DatabaseMigrationServiceAPI
+	describeReplicationInstancesOutput *databasemigrationservice.DescribeReplicationInstancesOutput
+	describeReplicationTasksOutput     *databasemigrationservice.DescribeReplicationTasksOutput
+}
+
+func (dms dmsClient) DescribeReplicationInstancesPagesWithContext(_ aws.Context, _ *databasemigrationservice.DescribeReplicationInstancesInput, fn func(*databasemigrationservice.DescribeReplicationInstancesOutput, bool) bool, _ ...request.Option) error {
+	fn(dms.describeReplicationInstancesOutput, true)
+	return nil
+}
+
+func (dms dmsClient) DescribeReplicationTasksPagesWithContext(_ aws.Context, _ *databasemigrationservice.DescribeReplicationTasksInput, fn func(*databasemigrationservice.DescribeReplicationTasksOutput, bool) bool, _ ...request.Option) error {
+	fn(dms.describeReplicationTasksOutput, true)
+	return nil
 }

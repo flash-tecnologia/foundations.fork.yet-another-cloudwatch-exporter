@@ -1,3 +1,15 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package v1
 
 import (
@@ -15,10 +27,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/prometheusservice"
 	"github.com/aws/aws-sdk-go/service/shield"
 	"github.com/aws/aws-sdk-go/service/storagegateway"
-	"github.com/grafana/regexp"
 
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/promutil"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/promutil"
 )
 
 type ServiceFilter struct {
@@ -32,19 +43,21 @@ type ServiceFilter struct {
 // ServiceFilters maps a service namespace to (optional) ServiceFilter
 var ServiceFilters = map[string]ServiceFilter{
 	"AWS/ApiGateway": {
+		// ApiGateway ARNs use the Id (for v1 REST APIs) and ApiId (for v2 APIs) instead of
+		// the ApiName (display name). See https://docs.aws.amazon.com/apigateway/latest/developerguide/arn-format-reference.html
+		// However, in metrics, the ApiId dimension uses the ApiName as value.
+		//
+		// Here we use the ApiGateway API to map resource correctly. For backward compatibility,
+		// in v1 REST APIs we change the ARN to replace the ApiId with ApiName, while for v2 APIs
+		// we leave the ARN as-is.
 		FilterFunc: func(ctx context.Context, client client, inputResources []*model.TaggedResource) ([]*model.TaggedResource, error) {
-			promutil.APIGatewayAPICounter.Inc()
+			var limit int64 = 500 // max number of results per page. default=25, max=500
 			const maxPages = 10
+			input := apigateway.GetRestApisInput{Limit: &limit}
+			output := apigateway.GetRestApisOutput{}
+			var pageNum int
 
-			var (
-				limit           int64 = 500 // max number of results per page. default=25, max=500
-				input                 = apigateway.GetRestApisInput{Limit: &limit}
-				output                = apigateway.GetRestApisOutput{}
-				pageNum         int
-				outputResources []*model.TaggedResource
-			)
-
-			err := client.apiGatewayAPI.GetRestApisPagesWithContext(ctx, &input, func(page *apigateway.GetRestApisOutput, lastPage bool) bool {
+			err := client.apiGatewayAPI.GetRestApisPagesWithContext(ctx, &input, func(page *apigateway.GetRestApisOutput, _ bool) bool {
 				promutil.APIGatewayAPICounter.Inc()
 				pageNum++
 				output.Items = append(output.Items, page.Items...)
@@ -53,16 +66,17 @@ var ServiceFilters = map[string]ServiceFilter{
 			if err != nil {
 				return nil, fmt.Errorf("error calling apiGatewayAPI.GetRestApisPages, %w", err)
 			}
+
 			outputV2, err := client.apiGatewayV2API.GetApisWithContext(ctx, &apigatewayv2.GetApisInput{})
 			promutil.APIGatewayAPIV2Counter.Inc()
 			if err != nil {
 				return nil, fmt.Errorf("error calling apiGatewayAPIv2.GetApis, %w", err)
 			}
 
+			var outputResources []*model.TaggedResource
 			for _, resource := range inputResources {
 				for i, gw := range output.Items {
-					searchString := regexp.MustCompile(fmt.Sprintf(".*restapis/%s$", *gw.Id))
-					if searchString.MatchString(resource.ARN) {
+					if strings.HasSuffix(resource.ARN, "/restapis/"+*gw.Id) {
 						r := resource
 						r.ARN = strings.ReplaceAll(resource.ARN, *gw.Id, *gw.Name)
 						outputResources = append(outputResources, r)
@@ -71,8 +85,7 @@ var ServiceFilters = map[string]ServiceFilter{
 					}
 				}
 				for i, gw := range outputV2.Items {
-					searchString := regexp.MustCompile(fmt.Sprintf(".*apis/%s$", *gw.ApiId))
-					if searchString.MatchString(resource.ARN) {
+					if strings.HasSuffix(resource.ARN, "/apis/"+*gw.ApiId) {
 						outputResources = append(outputResources, resource)
 						outputV2.Items = append(outputV2.Items[:i], outputV2.Items[i+1:]...)
 						break
@@ -87,14 +100,14 @@ var ServiceFilters = map[string]ServiceFilter{
 			pageNum := 0
 			var resources []*model.TaggedResource
 			err := client.autoscalingAPI.DescribeAutoScalingGroupsPagesWithContext(ctx, &autoscaling.DescribeAutoScalingGroupsInput{},
-				func(page *autoscaling.DescribeAutoScalingGroupsOutput, more bool) bool {
+				func(page *autoscaling.DescribeAutoScalingGroupsOutput, _ bool) bool {
 					pageNum++
 					promutil.AutoScalingAPICounter.Inc()
 
 					for _, asg := range page.AutoScalingGroups {
 						resource := model.TaggedResource{
 							ARN:       aws.StringValue(asg.AutoScalingGroupARN),
-							Namespace: job.Type,
+							Namespace: job.Namespace,
 							Region:    region,
 						}
 
@@ -125,7 +138,7 @@ var ServiceFilters = map[string]ServiceFilter{
 			replicationInstanceIdentifiers := make(map[string]string)
 			pageNum := 0
 			if err := client.dmsAPI.DescribeReplicationInstancesPagesWithContext(ctx, nil,
-				func(page *databasemigrationservice.DescribeReplicationInstancesOutput, lastPage bool) bool {
+				func(page *databasemigrationservice.DescribeReplicationInstancesOutput, _ bool) bool {
 					pageNum++
 					promutil.DmsAPICounter.Inc()
 
@@ -140,7 +153,7 @@ var ServiceFilters = map[string]ServiceFilter{
 			}
 			pageNum = 0
 			if err := client.dmsAPI.DescribeReplicationTasksPagesWithContext(ctx, nil,
-				func(page *databasemigrationservice.DescribeReplicationTasksOutput, lastPage bool) bool {
+				func(page *databasemigrationservice.DescribeReplicationTasksOutput, _ bool) bool {
 					pageNum++
 					promutil.DmsAPICounter.Inc()
 
@@ -174,14 +187,14 @@ var ServiceFilters = map[string]ServiceFilter{
 			pageNum := 0
 			var resources []*model.TaggedResource
 			err := client.ec2API.DescribeSpotFleetRequestsPagesWithContext(ctx, &ec2.DescribeSpotFleetRequestsInput{},
-				func(page *ec2.DescribeSpotFleetRequestsOutput, more bool) bool {
+				func(page *ec2.DescribeSpotFleetRequestsOutput, _ bool) bool {
 					pageNum++
 					promutil.Ec2APICounter.Inc()
 
 					for _, ec2Spot := range page.SpotFleetRequestConfigs {
 						resource := model.TaggedResource{
 							ARN:       aws.StringValue(ec2Spot.SpotFleetRequestId),
-							Namespace: job.Type,
+							Namespace: job.Namespace,
 							Region:    region,
 						}
 
@@ -207,14 +220,14 @@ var ServiceFilters = map[string]ServiceFilter{
 			pageNum := 0
 			var resources []*model.TaggedResource
 			err := client.prometheusSvcAPI.ListWorkspacesPagesWithContext(ctx, &prometheusservice.ListWorkspacesInput{},
-				func(page *prometheusservice.ListWorkspacesOutput, more bool) bool {
+				func(page *prometheusservice.ListWorkspacesOutput, _ bool) bool {
 					pageNum++
 					promutil.ManagedPrometheusAPICounter.Inc()
 
 					for _, ws := range page.Workspaces {
 						resource := model.TaggedResource{
 							ARN:       aws.StringValue(ws.Arn),
-							Namespace: job.Type,
+							Namespace: job.Namespace,
 							Region:    region,
 						}
 
@@ -240,14 +253,14 @@ var ServiceFilters = map[string]ServiceFilter{
 			pageNum := 0
 			var resources []*model.TaggedResource
 			err := client.storageGatewayAPI.ListGatewaysPagesWithContext(ctx, &storagegateway.ListGatewaysInput{},
-				func(page *storagegateway.ListGatewaysOutput, more bool) bool {
+				func(page *storagegateway.ListGatewaysOutput, _ bool) bool {
 					pageNum++
 					promutil.StoragegatewayAPICounter.Inc()
 
 					for _, gwa := range page.Gateways {
 						resource := model.TaggedResource{
 							ARN:       fmt.Sprintf("%s/%s", *gwa.GatewayId, *gwa.GatewayName),
-							Namespace: job.Type,
+							Namespace: job.Namespace,
 							Region:    region,
 						}
 
@@ -280,14 +293,14 @@ var ServiceFilters = map[string]ServiceFilter{
 			pageNum := 0
 			var resources []*model.TaggedResource
 			err := client.ec2API.DescribeTransitGatewayAttachmentsPagesWithContext(ctx, &ec2.DescribeTransitGatewayAttachmentsInput{},
-				func(page *ec2.DescribeTransitGatewayAttachmentsOutput, more bool) bool {
+				func(page *ec2.DescribeTransitGatewayAttachmentsOutput, _ bool) bool {
 					pageNum++
 					promutil.Ec2APICounter.Inc()
 
 					for _, tgwa := range page.TransitGatewayAttachments {
 						resource := model.TaggedResource{
 							ARN:       fmt.Sprintf("%s/%s", *tgwa.TransitGatewayId, *tgwa.TransitGatewayAttachmentId),
-							Namespace: job.Type,
+							Namespace: job.Namespace,
 							Region:    region,
 						}
 
@@ -317,7 +330,7 @@ var ServiceFilters = map[string]ServiceFilter{
 			pageNum := 0
 			// Default page size is only 20 which can easily lead to throttling
 			input := &shield.ListProtectionsInput{MaxResults: aws.Int64(1000)}
-			err := c.shieldAPI.ListProtectionsPagesWithContext(ctx, input, func(page *shield.ListProtectionsOutput, b bool) bool {
+			err := c.shieldAPI.ListProtectionsPagesWithContext(ctx, input, func(page *shield.ListProtectionsOutput, _ bool) bool {
 				promutil.ShieldAPICounter.Inc()
 				for _, protection := range page.Protections {
 					protectedResourceArn := *protection.ResourceArn
@@ -341,7 +354,7 @@ var ServiceFilters = map[string]ServiceFilter{
 					if protectedResource.Region == region || (protectedResource.Region == "" && region == "us-east-1") {
 						taggedResource := &model.TaggedResource{
 							ARN:       protectedResourceArn,
-							Namespace: job.Type,
+							Namespace: job.Namespace,
 							Region:    region,
 							Tags:      []model.Tag{{Key: "ProtectionArn", Value: protectionArn}},
 						}

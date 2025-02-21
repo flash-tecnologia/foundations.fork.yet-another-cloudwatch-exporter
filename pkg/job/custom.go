@@ -1,91 +1,54 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package job
 
 import (
 	"context"
-	"fmt"
-	"math"
-	"math/rand"
+	"log/slog"
 	"sync"
 
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/clients/cloudwatch"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/logging"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/clients/cloudwatch"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
 )
 
 func runCustomNamespaceJob(
 	ctx context.Context,
-	logger logging.Logger,
+	logger *slog.Logger,
 	job model.CustomNamespaceJob,
 	clientCloudwatch cloudwatch.Client,
-	metricsPerQuery int,
+	gmdProcessor getMetricDataProcessor,
 ) []*model.CloudwatchData {
-	cw := []*model.CloudwatchData{}
-
-	mux := &sync.Mutex{}
-	var wg sync.WaitGroup
-
-	getMetricDatas := getMetricDataForQueriesForCustomNamespace(ctx, job, clientCloudwatch, logger)
-	metricDataLength := len(getMetricDatas)
-	if metricDataLength == 0 {
+	cloudwatchDatas := getMetricDataForQueriesForCustomNamespace(ctx, job, clientCloudwatch, logger)
+	if len(cloudwatchDatas) == 0 {
 		logger.Debug("No metrics data found")
-		return cw
+		return nil
 	}
 
-	maxMetricCount := metricsPerQuery
-	length := getMetricDataInputLength(job.Metrics)
-	partition := int(math.Ceil(float64(metricDataLength) / float64(maxMetricCount)))
-	logger.Debug("GetMetricData partitions", "total", partition)
-
-	wg.Add(partition)
-
-	for i := 0; i < metricDataLength; i += maxMetricCount {
-		go func(i int) {
-			defer wg.Done()
-
-			end := i + maxMetricCount
-			if end > metricDataLength {
-				end = metricDataLength
-			}
-			input := getMetricDatas[i:end]
-			data := clientCloudwatch.GetMetricData(ctx, logger, input, job.Namespace, length, job.Delay, job.RoundingPeriod)
-
-			if data != nil {
-				output := make([]*model.CloudwatchData, 0)
-				for _, result := range data {
-					getMetricData, err := findGetMetricDataByIDForCustomNamespace(input, result.ID)
-					if err == nil {
-						// Copy to avoid a loop closure bug
-						dataPoint := result.Datapoint
-						getMetricData.GetMetricDataPoint = &dataPoint
-						getMetricData.GetMetricDataTimestamps = result.Timestamp
-						output = append(output, getMetricData)
-					}
-				}
-				mux.Lock()
-				cw = append(cw, output...)
-				mux.Unlock()
-			}
-		}(i)
+	var err error
+	cloudwatchDatas, err = gmdProcessor.Run(ctx, job.Namespace, cloudwatchDatas)
+	if err != nil {
+		logger.Error("Failed to get metric data", "err", err)
+		return nil
 	}
 
-	wg.Wait()
-	return cw
-}
-
-func findGetMetricDataByIDForCustomNamespace(getMetricDatas []*model.CloudwatchData, value string) (*model.CloudwatchData, error) {
-	for _, getMetricData := range getMetricDatas {
-		if *getMetricData.MetricID == value {
-			return getMetricData, nil
-		}
-	}
-	return nil, fmt.Errorf("metric with id %s not found", value)
+	return cloudwatchDatas
 }
 
 func getMetricDataForQueriesForCustomNamespace(
 	ctx context.Context,
 	customNamespaceJob model.CustomNamespaceJob,
 	clientCloudwatch cloudwatch.Client,
-	logger logging.Logger,
+	logger *slog.Logger,
 ) []*model.CloudwatchData {
 	mux := &sync.Mutex{}
 	var getMetricDatas []*model.CloudwatchData
@@ -108,18 +71,25 @@ func getMetricDataForQueriesForCustomNamespace(
 						continue
 					}
 
-					for _, stats := range metric.Statistics {
-						id := fmt.Sprintf("id_%d", rand.Int())
+					for _, stat := range metric.Statistics {
 						data = append(data, &model.CloudwatchData{
-							ID:                     &customNamespaceJob.Name,
-							MetricID:               &id,
-							Metric:                 &metric.Name,
-							Namespace:              &customNamespaceJob.Namespace,
-							Statistics:             []string{stats},
-							NilToZero:              metric.NilToZero,
-							AddCloudwatchTimestamp: metric.AddCloudwatchTimestamp,
-							Dimensions:             cwMetric.Dimensions,
-							Period:                 metric.Period,
+							MetricName:   metric.Name,
+							ResourceName: customNamespaceJob.Name,
+							Namespace:    customNamespaceJob.Namespace,
+							Dimensions:   cwMetric.Dimensions,
+							GetMetricDataProcessingParams: &model.GetMetricDataProcessingParams{
+								Period:    metric.Period,
+								Length:    metric.Length,
+								Delay:     metric.Delay,
+								Statistic: stat,
+							},
+							MetricMigrationParams: model.MetricMigrationParams{
+								NilToZero:              metric.NilToZero,
+								AddCloudwatchTimestamp: metric.AddCloudwatchTimestamp,
+							},
+							Tags:                      nil,
+							GetMetricDataResult:       nil,
+							GetMetricStatisticsResult: nil,
 						})
 					}
 				}
@@ -129,7 +99,7 @@ func getMetricDataForQueriesForCustomNamespace(
 				mux.Unlock()
 			})
 			if err != nil {
-				logger.Error(err, "Failed to get full metric list", "metric_name", metric.Name, "namespace", customNamespaceJob.Namespace)
+				logger.Error("Failed to get full metric list", "metric_name", metric.Name, "namespace", customNamespaceJob.Namespace, "err", err)
 				return
 			}
 		}(metric)

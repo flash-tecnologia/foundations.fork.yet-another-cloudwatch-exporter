@@ -1,8 +1,16 @@
 # YACE - yet another cloudwatch exporter
 
+[![Container on Quay](https://quay.io/repository/prometheuscommunity/yet-another-cloudwatch-exporter/status)][quay]
+[![Container on Docker Hub](https://img.shields.io/docker/pulls/prometheuscommunity/yet-another-cloudwatch-exporter.svg?maxAge=604800)][docker]
+
 YACE, or `yet another cloudwatch exporter`, is a [Prometheus exporter](https://prometheus.io/docs/instrumenting/exporters/#exporters-and-integrations) for [AWS CloudWatch](http://aws.amazon.com/cloudwatch/) metrics. It is written in Go and uses the official AWS SDK.
 
-The project was originally created by Thomas Peitz while working at InVision.de, then later moved outside of the company repo. Read the full rebranding story [here](https://medium.com/@IT_Supertramp/reorganizing-yace-79d7149b9584).
+## News
+
+As of November 2024, YACE is part of [prometheus-community](https://github.com/prometheus-community). Read more about it in these announcement posts:
+
+* https://prometheus.io/blog/2024/11/19/yace-joining-prometheus-community/
+* https://grafana.com/blog/2024/11/19/yace-moves-to-prometheus-community/
 
 ## Alternatives
 
@@ -37,84 +45,109 @@ Only the latest version gets security updates. We won't support older versions.
 * Can be used as a library in an external application
 * Support the scraping of custom namespaces metrics with the CloudWatch Dimensions.
 * Supported services with auto discovery through tags:
-
-  * acm (AWS/CertificateManager) - Certificate Manager
-  * acm-pca (AWS/ACMPrivateCA) - ACM Private CA
-  * airflow (AmazonMWAA) - Managed Apache Airflow
-  * mwaa (AWS/MWAA) - Managed Apache Airflow (Container, queue, and database metrics)
-  * alb (AWS/ApplicationELB) - Application Load Balancer
-  * apigateway (AWS/ApiGateway) - API Gateway
-  * appstream (AWS/AppStream) - AppStream
-  * appsync (AWS/AppSync) - AppSync
-  * amp (AWS/Prometheus) - Managed Service for Prometheus
-  * aoss (AWS/AOSS) - OpenSearch Serverless
-  * athena (AWS/Athena) - Athena
-  * backup (AWS/Backup) - Backup
-  * beanstalk (AWS/ElasticBeanstalk) - Elastic Beanstalk
-  * billing (AWS/Billing) - Billing
-  * cassandra (AWS/Cassandra) - Cassandra
-  * cloudfront (AWS/CloudFront) - Cloud Front
-  * cognito-idp (AWS/Cognito) - Cognito
-  * dms (AWS/DMS) - Database Migration Service
-  * docdb (AWS/DocDB) - DocumentDB (with MongoDB compatibility)
-  * dx (AWS/DX) - Direct Connect
-  * dynamodb (AWS/DynamoDB) - NoSQL Key-Value Database
-  * ebs (AWS/EBS) - Elastic Block Storage
-  * ec (AWS/Elasticache) - ElastiCache
-  * ec2 (AWS/EC2) - Elastic Compute Cloud
-  * ec2Spot (AWS/EC2Spot) - Elastic Compute Cloud for Spot Instances
-  * ecs-svc (AWS/ECS) - Elastic Container Service (Service Metrics)
-  * ecs-containerinsights (ECS/ContainerInsights) - ECS/ContainerInsights (Fargate metrics)
-  * efs (AWS/EFS) - Elastic File System
-  * elb (AWS/ELB) - Elastic Load Balancer
-  * emr (AWS/ElasticMapReduce) - Elastic MapReduce
-  * emr-serverless (AWS/EMRServerless) - Amazon EMR Serverless
-  * es (AWS/ES) - ElasticSearch
-  * fsx (AWS/FSx) - FSx File System
-  * gamelift (AWS/GameLift) - GameLift
-  * ga (AWS/GlobalAccelerator) - AWS Global Accelerator
-  * glue (Glue) - AWS Glue Jobs
-  * iot (AWS/IoT) - IoT
-  * kafkaconnect (AWS/KafkaConnect) - AWS MSK Connectors
-  * kinesis (AWS/Kinesis) - Kinesis Data Stream
-  * nfw (AWS/NetworkFirewall) - Network Firewall
-  * ngw (AWS/NATGateway) - NAT Gateway
-  * lambda (AWS/Lambda) - Lambda Functions
-  * mediaconnect (AWS/MediaConnect) - AWS Elemental MediaConnect
-  * mediaconvert (AWS/MediaConvert) - AWS Elemental MediaConvert
-  * medialive (AWS/MediaLive) - AWS Elemental MediaLive
-  * mediatailor (AWS/MediaTailor) - AWS Elemental MediaTailor
-  * mq (AWS/AmazonMQ) - Managed Message Broker Service
-  * memorydb (AWS/MemoryDB) - AWS MemoryDB
-  * neptune (AWS/Neptune) - Neptune
-  * nlb (AWS/NetworkELB) - Network Load Balancer
-  * vpc-endpoint (AWS/PrivateLinkEndpoints) - VPC Endpoint
-  * vpc-endpoint-service (AWS/PrivateLinkServices) - VPC Endpoint Service
-  * redshift (AWS/Redshift) - Redshift Database
-  * rds (AWS/RDS) - Relational Database Service
-  * route53 (AWS/Route53) - Route53 Health Checks
-  * route53-resolver (AWS/Route53Resolver) - Route53 Resolver
-  * s3 (AWS/S3) - Object Storage
-  * sagemaker - Sagemaker invocations
-  * sagemaker-endpoints - Sagemaker Endpoints
-  * sagemaker-training - Sagemaker Training Jobs
-  * sagemaker-processing - Sagemaker Processing Jobs
-  * sagemaker-transform - Sagemaker Batch Transform Jobs
-  * sagemaker-inf-rec - Sagemaker Inference Recommender Jobs
-  * sagemaker-model-building - Sagemaker Model Building Pipelines
-  * ses (AWS/SES) - Simple Email Service
-  * shield (AWS/DDoSProtection) - Distributed Denial of Service (DDoS) protection service
-  * sqs (AWS/SQS) - Simple Queue Service
-  * storagegateway (AWS/StorageGateway) - On-premises access to cloud storage
-  * tgw (AWS/TransitGateway) - Transit Gateway
-  * vpn (AWS/VPN) - VPN connection
-  * asg (AWS/AutoScaling) - Auto Scaling Group
-  * kafka (AWS/Kafka) - Managed Apache Kafka
-  * firehose (AWS/Firehose) - Managed Streaming Service
-  * sns (AWS/SNS) - Simple Notification Service
-  * sfn (AWS/States) - Step Functions
-  * wafv2 (AWS/WAFV2) - Web Application Firewall v2
-  * workspaces (AWS/WorkSpaces) - Workspaces
+  * `/aws/sagemaker/Endpoints` - Sagemaker Endpoints
+  * `/aws/sagemaker/InferenceRecommendationsJobs` - Sagemaker Inference Recommender Jobs
+  * `/aws/sagemaker/ProcessingJobs` - Sagemaker Processing Jobs
+  * `/aws/sagemaker/TrainingJobs` - Sagemaker Training Jobs
+  * `/aws/sagemaker/TransformJobs` - Sagemaker Batch Transform Jobs
+  * `AmazonMWAA` - Managed Apache Airflow
+  * `AWS/ACMPrivateCA` - ACM Private CA
+  * `AWS/AmazonMQ` - Managed Message Broker Service
+  * `AWS/AOSS` - OpenSearch Serverless
+  * `AWS/ApiGateway` - ApiGateway (V1 and V2)
+  * `AWS/ApplicationELB` - Application Load Balancer
+  * `AWS/AppRunner` - Managed Container Apps Service
+  * `AWS/AppStream` - AppStream
+  * `AWS/AppSync` - AppSync
+  * `AWS/Athena` - Athena
+  * `AWS/AutoScaling` - Auto Scaling Group
+  * `AWS/Backup` - Backup
+  * `AWS/Bedrock` - GenerativeAI
+  * `AWS/Billing` - Billing
+  * `AWS/Cassandra` - Cassandra
+  * `AWS/CertificateManager` - Certificate Manager
+  * `AWS/ClientVPN` - Client-based VPN
+  * `AWS/CloudFront` - Cloud Front
+  * `AWS/Cognito` - Cognito
+  * `AWS/DataSync` - DataSync
+  * `AWS/DDoSProtection` - Distributed Denial of Service (DDoS) protection service
+  * `AWS/DirectoryService` - Directory Services (MicrosoftAD)
+  * `AWS/DMS` - Database Migration Service
+  * `AWS/DocDB` - DocumentDB (with MongoDB compatibility)
+  * `AWS/DX` - Direct Connect
+  * `AWS/DynamoDB` - NoSQL Key-Value Database
+  * `AWS/EBS` - Elastic Block Storage
+  * `AWS/EC2` - Elastic Compute Cloud
+  * `AWS/EC2Spot` - Elastic Compute Cloud for Spot Instances
+  * `AWS/ECR` - Elastic Container Registry
+  * `AWS/ECS` - Elastic Container Service (Service Metrics)
+  * `AWS/EFS` - Elastic File System
+  * `AWS/ElastiCache` - ElastiCache
+  * `AWS/ElasticBeanstalk` - Elastic Beanstalk
+  * `AWS/ElasticMapReduce` - Elastic MapReduce
+  * `AWS/ELB` - Elastic Load Balancer
+  * `AWS/EMRServerless` - Amazon EMR Serverless
+  * `AWS/ES` - ElasticSearch
+  * `AWS/Events` - EventBridge
+  * `AWS/Firehose` - Managed Streaming Service
+  * `AWS/FSx` - FSx File System
+  * `AWS/GameLift` - GameLift
+  * `AWS/GatewayELB` - Gateway Load Balancer
+  * `AWS/GlobalAccelerator` - AWS Global Accelerator
+  * `AWS/IoT` - IoT
+  * `AWS/IPAM` - IP address manager
+  * `AWS/Kafka` - Managed Apache Kafka
+  * `AWS/KafkaConnect` - AWS MSK Connectors
+  * `AWS/Kinesis` - Kinesis Data Stream
+  * `AWS/KinesisAnalytics` - Kinesis Data Analytics for SQL Applications
+  * `AWS/KMS` - Key Management Service
+  * `AWS/Lambda` - Lambda Functions
+  * `AWS/Logs` - CloudWatch Logs
+  * `AWS/MediaConnect` - AWS Elemental MediaConnect
+  * `AWS/MediaConvert` - AWS Elemental MediaConvert
+  * `AWS/MediaLive` - AWS Elemental MediaLive
+  * `AWS/MediaPackage` - AWS Elemental MediaPackage
+  * `AWS/MediaTailor` - AWS Elemental MediaTailor
+  * `AWS/MemoryDB` - AWS MemoryDB
+  * `AWS/MWAA` - Managed Apache Airflow (Container, queue, and database metrics)
+  * `AWS/NATGateway` - NAT Gateway
+  * `AWS/Neptune` - Neptune
+  * `AWS/NetworkELB` - Network Load Balancer
+  * `AWS/NetworkFirewall` - Network Firewall
+  * `AWS/Network Manager` - Network Manager
+  * `AWS/PrivateLinkEndpoints` - VPC Endpoint
+  * `AWS/PrivateLinkServices` - VPC Endpoint Service
+  * `AWS/Prometheus` - Managed Service for Prometheus
+  * `AWS/QLDB` - Quantum Ledger Database
+  * `AWS/QuickSight` - QuickSight (Business Intelligence)
+  * `AWS/RDS` - Relational Database Service
+  * `AWS/Redshift` - Redshift Database
+  * `AWS/Redshift-Serverless` - Redshift Serverless
+  * `AWS/Route53` - Route53 Health Checks
+  * `AWS/Route53Resolver` - Route53 Resolver
+  * `AWS/RUM` - Real User Monitoring
+  * `AWS/S3` - Object Storage
+  * `AWS/Sagemaker/ModelBuildingPipeline` - Sagemaker Model Building Pipelines
+  * `AWS/SageMaker` - Sagemaker invocations
+  * `AWS/Scheduler` - EventBridge Scheduler
+  * `AWS/SecretsManager` - Secrets Manager
+  * `AWS/SES` - Simple Email Service
+  * `AWS/SNS` - Simple Notification Service
+  * `AWS/SQS` - Simple Queue Service
+  * `AWS/States` - Step Functions
+  * `AWS/StorageGateway` - On-premises access to cloud storage
+  * `AWS/Timestream` - Time-series database service
+  * `AWS/TransitGateway` - Transit Gateway
+  * `AWS/TrustedAdvisor` - Trusted Advisor
+  * `AWS/Usage` - Usage of some AWS resources and APIs
+  * `AWS/VpcLattice` - VPC Lattice
+  * `AWS/VPN` - VPN connection
+  * `AWS/WAFV2` - Web Application Firewall v2
+  * `AWS/WorkSpaces` - Workspaces
+  * `ContainerInsights` - EKS ContainerInsights (Dependency on Cloudwatch agent)
+  * `CWAgent` - CloudWatch agent
+  * `ECS/ContainerInsights` - ECS/ContainerInsights (Fargate metrics)
+  * `Glue` - AWS Glue Jobs
 
 ## Feature flags
 
@@ -148,7 +181,8 @@ As a quick start, the following IAM policy can be used to grant the all permissi
         "ec2:DescribeSpotFleetRequests",
         "shield:ListProtections",
         "storagegateway:ListGateways",
-        "storagegateway:ListTagsForResource"
+        "storagegateway:ListTagsForResource",
+        "iam:ListAccountAliases"
       ],
       "Effect": "Allow",
       "Resource": "*"
@@ -210,6 +244,11 @@ This permission is required to discover protected resources for the AWS/DDoSProt
 "shield:ListProtections"
 ```
 
+The AWS IAM API supports creating account aliases, which are human-friendly names that can be used to easily identify accounts. An account can have at most a single alias, see ([docs](https://docs.aws.amazon.com/IAM/latest/APIReference/API_ListAccountAliases.html)). Each alias must be unique across an AWS network partition ([docs](https://docs.aws.amazon.com/IAM/latest/UserGuide/console_account-alias.html#AboutAccountAlias)). The following permission is required to get the alias for an account, which is exported as a label in the `aws_account_info` metric:
+```json
+"iam:ListAccountAliases"
+```
+
 If running YACE inside an AWS EC2 instance, the exporter will automatically attempt to assume the associated IAM Role. If this is undesirable behavior turn off the use the metadata endpoint by setting the environment variable `AWS_EC2_METADATA_DISABLED=true`.
 
 ## Configuration
@@ -259,7 +298,7 @@ predict_linear(aws_es_free_storage_space_minimum[2d], 86400 * 7) + on (name) gro
 to support local testing all AWS urls can be overridden with by setting an environment variable `AWS_ENDPOINT_URL`
 ```shell
 docker run -d --rm -v $PWD/credentials:/exporter/.aws/credentials -v $PWD/config.yml:/tmp/config.yml \
--e AWS_ENDPOINT_URL=http://localhost:4766 -p 5000:5000 --name yace ghcr.io/nerdswords/yet-another-cloudwatch-exporter:vx.xx.x # release version as tag - Do not forget the version 'v'
+-e AWS_ENDPOINT_URL=http://localhost:4766 -p 5000:5000 --name yace quay.io/prometheuscommunity/yet-another-cloudwatch-exporter:latest
 ```
 
 ## Options
@@ -271,7 +310,7 @@ apiVersion: v1alpha1
 sts-region: eu-west-1
 discovery:
   jobs:
-    - type: ecs-svc
+    - type: AWS/ECS
       regions:
         - eu-north-1
       roles:
@@ -331,3 +370,6 @@ go without losing data. ELB metrics on AWS are written every 5 minutes (300) in 
 
 * [Justin Santa Barbara](https://github.com/justinsb) - For telling me about AWS tags api which simplified a lot - Thanks!
 * [Brian Brazil](https://github.com/brian-brazil) - Who gave a lot of feedback regarding UX and prometheus lib - Thanks!
+
+[quay]: https://quay.io/repository/prometheuscommunity/yet-another-cloudwatch-exporter
+[docker]: https://hub.docker.com/r/prometheuscommunity/yet-another-cloudwatch-exporter

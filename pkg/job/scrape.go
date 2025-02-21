@@ -1,28 +1,41 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package job
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/clients"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/clients/cloudwatch"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/config"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/logging"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/clients"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/clients/cloudwatch"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/config"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/job/getmetricdata"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
 )
 
 func ScrapeAwsData(
 	ctx context.Context,
-	logger logging.Logger,
+	logger *slog.Logger,
 	jobsCfg model.JobsConfig,
 	factory clients.Factory,
 	metricsPerQuery int,
 	cloudwatchConcurrency cloudwatch.ConcurrencyConfig,
 	taggingAPIConcurrency int,
-) ([][]*model.TaggedResource, []model.CloudwatchMetricResult) {
+) ([]model.TaggedResourceResult, []model.CloudwatchMetricResult) {
 	mux := &sync.Mutex{}
 	cwData := make([]model.CloudwatchMetricResult, 0)
-	awsInfoData := make([][]*model.TaggedResource, 0)
+	awsInfoData := make([]model.TaggedResourceResult, 0)
 	var wg sync.WaitGroup
 
 	for _, discoveryJob := range jobsCfg.DiscoveryJobs {
@@ -31,31 +44,46 @@ func ScrapeAwsData(
 				wg.Add(1)
 				go func(discoveryJob model.DiscoveryJob, region string, role model.Role) {
 					defer wg.Done()
-					jobLogger := logger.With("job_type", discoveryJob.Type, "region", region, "arn", role.RoleArn)
+					jobLogger := logger.With("namespace", discoveryJob.Namespace, "region", region, "arn", role.RoleArn)
 					accountID, err := factory.GetAccountClient(region, role).GetAccount(ctx)
 					if err != nil {
-						jobLogger.Error(err, "Couldn't get account Id")
+						jobLogger.Error("Couldn't get account Id", "err", err)
 						return
 					}
 					jobLogger = jobLogger.With("account", accountID)
 
-					resources, metrics := runDiscoveryJob(ctx, jobLogger, discoveryJob, region, factory.GetTaggingClient(region, role, taggingAPIConcurrency), factory.GetCloudwatchClient(region, role, cloudwatchConcurrency), metricsPerQuery, cloudwatchConcurrency)
-					metricResult := model.CloudwatchMetricResult{
-						Context: &model.JobContext{
-							Region:     region,
-							AccountID:  accountID,
-							CustomTags: discoveryJob.CustomTags,
-						},
-						Data: metrics,
+					accountAlias, err := factory.GetAccountClient(region, role).GetAccountAlias(ctx)
+					if err != nil {
+						jobLogger.Warn("Couldn't get account alias", "err", err)
 					}
 
+					cloudwatchClient := factory.GetCloudwatchClient(region, role, cloudwatchConcurrency)
+					gmdProcessor := getmetricdata.NewDefaultProcessor(logger, cloudwatchClient, metricsPerQuery, cloudwatchConcurrency.GetMetricData)
+					resources, metrics := runDiscoveryJob(ctx, jobLogger, discoveryJob, region, factory.GetTaggingClient(region, role, taggingAPIConcurrency), cloudwatchClient, gmdProcessor)
 					addDataToOutput := len(metrics) != 0
 					if config.FlagsFromCtx(ctx).IsFeatureEnabled(config.AlwaysReturnInfoMetrics) {
 						addDataToOutput = addDataToOutput || len(resources) != 0
 					}
 					if addDataToOutput {
+						sc := &model.ScrapeContext{
+							Region:       region,
+							AccountID:    accountID,
+							AccountAlias: accountAlias,
+							CustomTags:   discoveryJob.CustomTags,
+						}
+						metricResult := model.CloudwatchMetricResult{
+							Context: sc,
+							Data:    metrics,
+						}
+						resourceResult := model.TaggedResourceResult{
+							Data: resources,
+						}
+						if discoveryJob.IncludeContextOnInfoMetrics {
+							resourceResult.Context = sc
+						}
+
 						mux.Lock()
-						awsInfoData = append(awsInfoData, resources)
+						awsInfoData = append(awsInfoData, resourceResult)
 						cwData = append(cwData, metricResult)
 						mux.Unlock()
 					}
@@ -73,17 +101,23 @@ func ScrapeAwsData(
 					jobLogger := logger.With("static_job_name", staticJob.Name, "region", region, "arn", role.RoleArn)
 					accountID, err := factory.GetAccountClient(region, role).GetAccount(ctx)
 					if err != nil {
-						jobLogger.Error(err, "Couldn't get account Id")
+						jobLogger.Error("Couldn't get account Id", "err", err)
 						return
 					}
 					jobLogger = jobLogger.With("account", accountID)
 
+					accountAlias, err := factory.GetAccountClient(region, role).GetAccountAlias(ctx)
+					if err != nil {
+						jobLogger.Warn("Couldn't get account alias", "err", err)
+					}
+
 					metrics := runStaticJob(ctx, jobLogger, staticJob, factory.GetCloudwatchClient(region, role, cloudwatchConcurrency))
 					metricResult := model.CloudwatchMetricResult{
-						Context: &model.JobContext{
-							Region:     region,
-							AccountID:  accountID,
-							CustomTags: staticJob.CustomTags,
+						Context: &model.ScrapeContext{
+							Region:       region,
+							AccountID:    accountID,
+							AccountAlias: accountAlias,
+							CustomTags:   staticJob.CustomTags,
 						},
 						Data: metrics,
 					}
@@ -104,17 +138,25 @@ func ScrapeAwsData(
 					jobLogger := logger.With("custom_metric_namespace", customNamespaceJob.Namespace, "region", region, "arn", role.RoleArn)
 					accountID, err := factory.GetAccountClient(region, role).GetAccount(ctx)
 					if err != nil {
-						jobLogger.Error(err, "Couldn't get account Id")
+						jobLogger.Error("Couldn't get account Id", "err", err)
 						return
 					}
 					jobLogger = jobLogger.With("account", accountID)
 
-					metrics := runCustomNamespaceJob(ctx, jobLogger, customNamespaceJob, factory.GetCloudwatchClient(region, role, cloudwatchConcurrency), metricsPerQuery)
+					accountAlias, err := factory.GetAccountClient(region, role).GetAccountAlias(ctx)
+					if err != nil {
+						jobLogger.Warn("Couldn't get account alias", "err", err)
+					}
+
+					cloudwatchClient := factory.GetCloudwatchClient(region, role, cloudwatchConcurrency)
+					gmdProcessor := getmetricdata.NewDefaultProcessor(logger, cloudwatchClient, metricsPerQuery, cloudwatchConcurrency.GetMetricData)
+					metrics := runCustomNamespaceJob(ctx, jobLogger, customNamespaceJob, cloudwatchClient, gmdProcessor)
 					metricResult := model.CloudwatchMetricResult{
-						Context: &model.JobContext{
-							Region:     region,
-							AccountID:  accountID,
-							CustomTags: customNamespaceJob.CustomTags,
+						Context: &model.ScrapeContext{
+							Region:       region,
+							AccountID:    accountID,
+							AccountAlias: accountAlias,
+							CustomTags:   customNamespaceJob.CustomTags,
 						},
 						Data: metrics,
 					}

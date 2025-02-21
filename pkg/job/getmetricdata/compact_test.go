@@ -1,4 +1,16 @@
-package job
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+package getmetricdata
 
 import (
 	"testing"
@@ -28,19 +40,19 @@ func TestCompact(t *testing.T) {
 		{
 			name:        "one element input, one element result",
 			input:       []*data{{n: 0}},
-			keepFunc:    func(el *data) bool { return true },
+			keepFunc:    func(_ *data) bool { return true },
 			expectedRes: []*data{{n: 0}},
 		},
 		{
 			name:        "one element input, empty result",
 			input:       []*data{{n: 0}},
-			keepFunc:    func(el *data) bool { return false },
+			keepFunc:    func(_ *data) bool { return false },
 			expectedRes: []*data{},
 		},
 		{
 			name:        "two elements input, two elements result",
 			input:       []*data{{n: 0}, {n: 1}},
-			keepFunc:    func(el *data) bool { return true },
+			keepFunc:    func(_ *data) bool { return true },
 			expectedRes: []*data{{n: 0}, {n: 1}},
 		},
 		{
@@ -58,7 +70,7 @@ func TestCompact(t *testing.T) {
 		{
 			name:        "two elements input, empty result",
 			input:       []*data{{n: 0}, {n: 1}},
-			keepFunc:    func(el *data) bool { return false },
+			keepFunc:    func(_ *data) bool { return false },
 			expectedRes: []*data{},
 		},
 		{

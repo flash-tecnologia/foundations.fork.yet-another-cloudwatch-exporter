@@ -1,15 +1,28 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package config
 
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/grafana/regexp"
 	"gopkg.in/yaml.v2"
 
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/logging"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
 )
 
 type ScrapeConf struct {
@@ -42,16 +55,17 @@ type JobLevelMetricFields struct {
 }
 
 type Job struct {
-	Regions                   []string  `yaml:"regions"`
-	Type                      string    `yaml:"type"`
-	Roles                     []Role    `yaml:"roles"`
-	SearchTags                []Tag     `yaml:"searchTags"`
-	CustomTags                []Tag     `yaml:"customTags"`
-	DimensionNameRequirements []string  `yaml:"dimensionNameRequirements"`
-	Metrics                   []*Metric `yaml:"metrics"`
-	RoundingPeriod            *int64    `yaml:"roundingPeriod"`
-	RecentlyActiveOnly        bool      `yaml:"recentlyActiveOnly"`
-	JobLevelMetricFields      `yaml:",inline"`
+	Regions                     []string  `yaml:"regions"`
+	Type                        string    `yaml:"type"`
+	Roles                       []Role    `yaml:"roles"`
+	SearchTags                  []Tag     `yaml:"searchTags"`
+	CustomTags                  []Tag     `yaml:"customTags"`
+	DimensionNameRequirements   []string  `yaml:"dimensionNameRequirements"`
+	Metrics                     []*Metric `yaml:"metrics"`
+	RoundingPeriod              *int64    `yaml:"roundingPeriod"`
+	RecentlyActiveOnly          bool      `yaml:"recentlyActiveOnly"`
+	IncludeContextOnInfoMetrics bool      `yaml:"includeContextOnInfoMetrics"`
+	JobLevelMetricFields        `yaml:",inline"`
 }
 
 type Static struct {
@@ -105,7 +119,7 @@ func (r *Role) ValidateRole(roleIdx int, parent string) error {
 	return nil
 }
 
-func (c *ScrapeConf) Load(file string, logger logging.Logger) (model.JobsConfig, error) {
+func (c *ScrapeConf) Load(file string, logger *slog.Logger) (model.JobsConfig, error) {
 	yamlFile, err := os.ReadFile(file)
 	if err != nil {
 		return model.JobsConfig{}, err
@@ -135,26 +149,48 @@ func (c *ScrapeConf) Load(file string, logger logging.Logger) (model.JobsConfig,
 		}
 	}
 
-	return c.Validate()
+	return c.Validate(logger)
 }
 
-func (c *ScrapeConf) Validate() (model.JobsConfig, error) {
+func (c *ScrapeConf) Validate(logger *slog.Logger) (model.JobsConfig, error) {
 	if c.Discovery.Jobs == nil && c.Static == nil && c.CustomNamespace == nil {
 		return model.JobsConfig{}, fmt.Errorf("At least 1 Discovery job, 1 Static or one CustomNamespace must be defined")
 	}
 
 	if c.Discovery.Jobs != nil {
 		for idx, job := range c.Discovery.Jobs {
-			err := job.validateDiscoveryJob(idx)
+			err := job.validateDiscoveryJob(logger, idx)
 			if err != nil {
 				return model.JobsConfig{}, err
+			}
+		}
+
+		if len(c.Discovery.ExportedTagsOnMetrics) > 0 {
+			for ns := range c.Discovery.ExportedTagsOnMetrics {
+				if svc := SupportedServices.GetService(ns); svc == nil {
+					if svc = SupportedServices.getServiceByAlias(ns); svc != nil {
+						return model.JobsConfig{}, fmt.Errorf("Discovery jobs: Invalid key in 'exportedTagsOnMetrics', use namespace %q rather than alias %q", svc.Namespace, svc.Alias)
+					}
+					return model.JobsConfig{}, fmt.Errorf("Discovery jobs: 'exportedTagsOnMetrics' key is not a valid namespace: %s", ns)
+				}
+
+				jobTypeMatch := false
+				for _, job := range c.Discovery.Jobs {
+					if job.Type == ns {
+						jobTypeMatch = true
+						break
+					}
+				}
+				if !jobTypeMatch {
+					return model.JobsConfig{}, fmt.Errorf("Discovery jobs: 'exportedTagsOnMetrics' key %q does not match with any discovery job type", ns)
+				}
 			}
 		}
 	}
 
 	if c.CustomNamespace != nil {
 		for idx, job := range c.CustomNamespace {
-			err := job.validateCustomNamespaceJob(idx)
+			err := job.validateCustomNamespaceJob(logger, idx)
 			if err != nil {
 				return model.JobsConfig{}, err
 			}
@@ -163,7 +199,7 @@ func (c *ScrapeConf) Validate() (model.JobsConfig, error) {
 
 	if c.Static != nil {
 		for idx, job := range c.Static {
-			err := job.validateStaticJob(idx)
+			err := job.validateStaticJob(logger, idx)
 			if err != nil {
 				return model.JobsConfig{}, err
 			}
@@ -176,9 +212,12 @@ func (c *ScrapeConf) Validate() (model.JobsConfig, error) {
 	return c.toModelConfig(), nil
 }
 
-func (j *Job) validateDiscoveryJob(jobIdx int) error {
+func (j *Job) validateDiscoveryJob(logger *slog.Logger, jobIdx int) error {
 	if j.Type != "" {
-		if SupportedServices.GetService(j.Type) == nil {
+		if svc := SupportedServices.GetService(j.Type); svc == nil {
+			if svc = SupportedServices.getServiceByAlias(j.Type); svc != nil {
+				return fmt.Errorf("Discovery job [%d]: Invalid 'type' field, use namespace %q rather than alias %q", jobIdx, svc.Namespace, svc.Alias)
+			}
 			return fmt.Errorf("Discovery job [%d]: Service is not in known list!: %s", jobIdx, j.Type)
 		}
 	} else {
@@ -201,16 +240,26 @@ func (j *Job) validateDiscoveryJob(jobIdx int) error {
 		return fmt.Errorf("Discovery job [%s/%d]: Metrics should not be empty", j.Type, jobIdx)
 	}
 	for metricIdx, metric := range j.Metrics {
-		err := metric.validateMetric(metricIdx, parent, &j.JobLevelMetricFields)
+		err := metric.validateMetric(logger, metricIdx, parent, &j.JobLevelMetricFields)
 		if err != nil {
 			return err
 		}
 	}
 
+	for _, st := range j.SearchTags {
+		if _, err := regexp.Compile(st.Value); err != nil {
+			return fmt.Errorf("Discovery job [%s/%d]: search tag value for %s has invalid regex value %s: %w", j.Type, jobIdx, st.Key, st.Value, err)
+		}
+	}
+
+	if j.RoundingPeriod != nil {
+		logger.Warn(fmt.Sprintf("Discovery job [%s/%d]: Setting a rounding period is deprecated. In a future release it will always be enabled and set to the value of the metric period.", j.Type, jobIdx))
+	}
+
 	return nil
 }
 
-func (j *CustomNamespace) validateCustomNamespaceJob(jobIdx int) error {
+func (j *CustomNamespace) validateCustomNamespaceJob(logger *slog.Logger, jobIdx int) error {
 	if j.Name == "" {
 		return fmt.Errorf("CustomNamespace job [%v]: Name should not be empty", jobIdx)
 	}
@@ -227,23 +276,26 @@ func (j *CustomNamespace) validateCustomNamespaceJob(jobIdx int) error {
 	} else {
 		return fmt.Errorf("no IAM roles configured. If the current IAM role is desired, an empty Role should be configured")
 	}
-	if j.Regions == nil || len(j.Regions) == 0 {
+	if len(j.Regions) == 0 {
 		return fmt.Errorf("CustomNamespace job [%s/%d]: Regions should not be empty", j.Name, jobIdx)
 	}
 	if len(j.Metrics) == 0 {
 		return fmt.Errorf("CustomNamespace job [%s/%d]: Metrics should not be empty", j.Name, jobIdx)
 	}
 	for metricIdx, metric := range j.Metrics {
-		err := metric.validateMetric(metricIdx, parent, &j.JobLevelMetricFields)
+		err := metric.validateMetric(logger, metricIdx, parent, &j.JobLevelMetricFields)
 		if err != nil {
 			return err
 		}
 	}
 
+	if j.RoundingPeriod != nil {
+		logger.Warn(fmt.Sprintf("CustomNamespace job [%s/%d]: Setting a rounding period is deprecated. It is always enabled and set to the value of the metric period.", j.Name, jobIdx))
+	}
 	return nil
 }
 
-func (j *Static) validateStaticJob(jobIdx int) error {
+func (j *Static) validateStaticJob(logger *slog.Logger, jobIdx int) error {
 	if j.Name == "" {
 		return fmt.Errorf("Static job [%v]: Name should not be empty", jobIdx)
 	}
@@ -264,7 +316,7 @@ func (j *Static) validateStaticJob(jobIdx int) error {
 		return fmt.Errorf("Static job [%s/%d]: Regions should not be empty", j.Name, jobIdx)
 	}
 	for metricIdx, metric := range j.Metrics {
-		err := metric.validateMetric(metricIdx, parent, nil)
+		err := metric.validateMetric(logger, metricIdx, parent, nil)
 		if err != nil {
 			return err
 		}
@@ -273,7 +325,7 @@ func (j *Static) validateStaticJob(jobIdx int) error {
 	return nil
 }
 
-func (m *Metric) validateMetric(metricIdx int, parent string, discovery *JobLevelMetricFields) error {
+func (m *Metric) validateMetric(logger *slog.Logger, metricIdx int, parent string, discovery *JobLevelMetricFields) error {
 	if m.Name == "" {
 		return fmt.Errorf("Metric [%s/%d] in %v: Name should not be empty", m.Name, metricIdx, parent)
 	}
@@ -307,13 +359,14 @@ func (m *Metric) validateMetric(metricIdx int, parent string, discovery *JobLeve
 		}
 	}
 
-	mDelay := m.Delay
-	if mDelay == 0 {
-		if discovery != nil && discovery.Delay != 0 {
-			mDelay = discovery.Delay
-		} else {
-			mDelay = model.DefaultDelaySeconds
-		}
+	// Delay at the metric level has been ignored for an incredibly long time. If we started respecting metric delay
+	// now a lot of configurations would break on release. This logs a warning for now
+	if m.Delay != 0 {
+		logger.Warn(fmt.Sprintf("Metric [%s/%d] in %v: Metric is configured with delay that has been being ignored. This behavior will change in the future, if your config works now remove this delay to prevent a future issue.", m.Name, metricIdx, parent))
+	}
+	var mDelay int64
+	if discovery != nil && discovery.Delay != 0 {
+		mDelay = discovery.Delay
 	}
 
 	mNilToZero := m.NilToZero
@@ -355,29 +408,24 @@ func (c *ScrapeConf) toModelConfig() model.JobsConfig {
 	jobsCfg.StsRegion = c.StsRegion
 
 	for _, discoveryJob := range c.Discovery.Jobs {
+		svc := SupportedServices.GetService(discoveryJob.Type)
+
 		job := model.DiscoveryJob{}
 		job.Regions = discoveryJob.Regions
-		job.Type = discoveryJob.Type
+		job.Namespace = svc.Namespace
 		job.DimensionNameRequirements = discoveryJob.DimensionNameRequirements
-		job.RoundingPeriod = discoveryJob.RoundingPeriod
 		job.RecentlyActiveOnly = discoveryJob.RecentlyActiveOnly
-		job.Statistics = discoveryJob.Statistics
-		job.Period = discoveryJob.Period
-		job.Length = discoveryJob.Length
-		job.Delay = discoveryJob.Delay
-		job.NilToZero = discoveryJob.NilToZero
-		job.AddCloudwatchTimestamp = discoveryJob.AddCloudwatchTimestamp
+		job.RoundingPeriod = discoveryJob.RoundingPeriod
 		job.Roles = toModelRoles(discoveryJob.Roles)
-		job.SearchTags = toModelTags(discoveryJob.SearchTags)
+		job.SearchTags = toModelSearchTags(discoveryJob.SearchTags)
 		job.CustomTags = toModelTags(discoveryJob.CustomTags)
 		job.Metrics = toModelMetricConfig(discoveryJob.Metrics)
+		job.IncludeContextOnInfoMetrics = discoveryJob.IncludeContextOnInfoMetrics
+		job.DimensionsRegexps = svc.ToModelDimensionsRegexp()
 
 		job.ExportedTagsOnMetrics = []string{}
 		if len(c.Discovery.ExportedTagsOnMetrics) > 0 {
-			svc := SupportedServices.GetService(job.Type)
 			if exportedTags, ok := c.Discovery.ExportedTagsOnMetrics[svc.Namespace]; ok {
-				job.ExportedTagsOnMetrics = exportedTags
-			} else if exportedTags, ok := c.Discovery.ExportedTagsOnMetrics[svc.Alias]; ok {
 				job.ExportedTagsOnMetrics = exportedTags
 			}
 		}
@@ -405,12 +453,6 @@ func (c *ScrapeConf) toModelConfig() model.JobsConfig {
 		job.DimensionNameRequirements = customNamespaceJob.DimensionNameRequirements
 		job.RoundingPeriod = customNamespaceJob.RoundingPeriod
 		job.RecentlyActiveOnly = customNamespaceJob.RecentlyActiveOnly
-		job.Statistics = customNamespaceJob.Statistics
-		job.Period = customNamespaceJob.Period
-		job.Length = customNamespaceJob.Length
-		job.Delay = customNamespaceJob.Delay
-		job.NilToZero = customNamespaceJob.NilToZero
-		job.AddCloudwatchTimestamp = customNamespaceJob.AddCloudwatchTimestamp
 		job.Roles = toModelRoles(customNamespaceJob.Roles)
 		job.CustomTags = toModelTags(customNamespaceJob.CustomTags)
 		job.Metrics = toModelMetricConfig(customNamespaceJob.Metrics)
@@ -426,6 +468,19 @@ func toModelTags(tags []Tag) []model.Tag {
 		ret = append(ret, model.Tag{
 			Key:   t.Key,
 			Value: t.Value,
+		})
+	}
+	return ret
+}
+
+func toModelSearchTags(tags []Tag) []model.SearchTag {
+	ret := make([]model.SearchTag, 0, len(tags))
+	for _, t := range tags {
+		// This should never panic as long as regex validation continues to happen before model mapping
+		r := regexp.MustCompile(t.Value)
+		ret = append(ret, model.SearchTag{
+			Key:   t.Key,
+			Value: r,
 		})
 	}
 	return ret
@@ -462,15 +517,15 @@ func toModelMetricConfig(metrics []*Metric) []*model.MetricConfig {
 			Period:                 m.Period,
 			Length:                 m.Length,
 			Delay:                  m.Delay,
-			NilToZero:              m.NilToZero,
-			AddCloudwatchTimestamp: m.AddCloudwatchTimestamp,
+			NilToZero:              aws.BoolValue(m.NilToZero),
+			AddCloudwatchTimestamp: aws.BoolValue(m.AddCloudwatchTimestamp),
 		})
 	}
 	return ret
 }
 
 // logConfigErrors logs as warning any config unmarshalling error.
-func logConfigErrors(cfg []byte, logger logging.Logger) {
+func logConfigErrors(cfg []byte, logger *slog.Logger) {
 	var sc ScrapeConf
 	var errMsgs []string
 	if err := yaml.UnmarshalStrict(cfg, &sc); err != nil {

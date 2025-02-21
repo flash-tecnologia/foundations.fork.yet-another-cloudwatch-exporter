@@ -1,16 +1,29 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package maxdimassociator
 
 import (
 	"cmp"
+	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
 	"github.com/grafana/regexp"
 	prom_model "github.com/prometheus/common/model"
 
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/logging"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
 )
 
 var amazonMQBrokerSuffix = regexp.MustCompile("-[0-9]+$")
@@ -24,7 +37,8 @@ type Associator struct {
 	// mappings is a slice of dimensions-based mappings, one for each regex of a given namespace
 	mappings []*dimensionsRegexpMapping
 
-	logger logging.Logger
+	logger       *slog.Logger
+	debugEnabled bool
 }
 
 type dimensionsRegexpMapping struct {
@@ -56,10 +70,11 @@ func (rm dimensionsRegexpMapping) toString() string {
 }
 
 // NewAssociator builds all mappings for the given dimensions regexps and list of resources.
-func NewAssociator(logger logging.Logger, dimensionRegexps []*regexp.Regexp, resources []*model.TaggedResource) Associator {
+func NewAssociator(logger *slog.Logger, dimensionsRegexps []model.DimensionsRegexp, resources []*model.TaggedResource) Associator {
 	assoc := Associator{
-		mappings: []*dimensionsRegexpMapping{},
-		logger:   logger,
+		mappings:     []*dimensionsRegexpMapping{},
+		logger:       logger,
+		debugEnabled: logger.Handler().Enabled(context.Background(), slog.LevelDebug), // caching if debug is enabled
 	}
 
 	// Keep track of resources that have already been mapped.
@@ -67,31 +82,25 @@ func NewAssociator(logger logging.Logger, dimensionRegexps []*regexp.Regexp, res
 	// TODO(cristian): use a more memory-efficient data structure
 	mappedResources := make([]bool, len(resources))
 
-	for _, regex := range dimensionRegexps {
-		m := &dimensionsRegexpMapping{dimensionsMapping: map[uint64]*model.TaggedResource{}}
-
-		names := regex.SubexpNames()
-		dimensionNames := make([]string, 0, len(names)-1)
-		for i := 1; i < len(names); i++ { // skip first name, it's always empty string
-			// in the regex names we use underscores where AWS dimensions have spaces
-			names[i] = strings.ReplaceAll(names[i], "_", " ")
-			dimensionNames = append(dimensionNames, names[i])
+	for _, dr := range dimensionsRegexps {
+		m := &dimensionsRegexpMapping{
+			dimensions:        dr.DimensionsNames,
+			dimensionsMapping: map[uint64]*model.TaggedResource{},
 		}
-		m.dimensions = dimensionNames
 
 		for idx, r := range resources {
 			if mappedResources[idx] {
 				continue
 			}
 
-			match := regex.FindStringSubmatch(r.ARN)
+			match := dr.Regexp.FindStringSubmatch(r.ARN)
 			if match == nil {
 				continue
 			}
 
 			labels := make(map[string]string, len(match))
 			for i := 1; i < len(match); i++ {
-				labels[names[i]] = match[i]
+				labels[dr.DimensionsNames[i-1]] = match[i]
 			}
 			signature := prom_model.LabelsToSignature(labels)
 			m.dimensionsMapping[signature] = r
@@ -108,8 +117,8 @@ func NewAssociator(logger logging.Logger, dimensionRegexps []*regexp.Regexp, res
 		// example when we define multiple regexps (to capture sibling
 		// or sub-resources) and one of them doesn't match any resource.
 		// This behaviour is ok, we just want to debug log to keep track of it.
-		if logger.IsDebugEnabled() {
-			logger.Debug("unable to define a regex mapping", "regex", regex.String())
+		if assoc.debugEnabled {
+			logger.Debug("unable to define a regex mapping", "regex", dr.Regexp.String())
 		}
 	}
 
@@ -120,7 +129,7 @@ func NewAssociator(logger logging.Logger, dimensionRegexps []*regexp.Regexp, res
 		return -1 * cmp.Compare(len(a.dimensions), len(b.dimensions))
 	})
 
-	if logger.IsDebugEnabled() {
+	if assoc.debugEnabled {
 		for idx, regexpMapping := range assoc.mappings {
 			logger.Debug("associator mapping", "mapping_idx", idx, "mapping", regexpMapping.toString())
 		}
@@ -148,7 +157,7 @@ func (assoc Associator) AssociateMetricToResource(cwMetric *model.Metric) (*mode
 		dimensions = append(dimensions, dimension.Name)
 	}
 
-	if logger.IsDebugEnabled() {
+	if assoc.debugEnabled {
 		logger.Debug("associate loop start", "dimensions", strings.Join(dimensions, ","))
 	}
 
@@ -159,7 +168,7 @@ func (assoc Associator) AssociateMetricToResource(cwMetric *model.Metric) (*mode
 	mappingFound := false
 	for idx, regexpMapping := range assoc.mappings {
 		if containsAll(dimensions, regexpMapping.dimensions) {
-			if logger.IsDebugEnabled() {
+			if assoc.debugEnabled {
 				logger.Debug("found mapping", "mapping_idx", idx, "mapping", regexpMapping.toString())
 			}
 

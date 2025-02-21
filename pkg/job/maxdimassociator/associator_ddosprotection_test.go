@@ -1,14 +1,25 @@
+// Copyright 2024 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package maxdimassociator
 
 import (
 	"testing"
 
-	"github.com/grafana/regexp"
+	"github.com/prometheus/common/promslog"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/config"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/logging"
-	"github.com/nerdswords/yet-another-cloudwatch-exporter/pkg/model"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/config"
+	"github.com/prometheus-community/yet-another-cloudwatch-exporter/pkg/model"
 )
 
 var protectedResources1 = &model.TaggedResource{
@@ -28,7 +39,7 @@ var protectedResources = []*model.TaggedResource{
 
 func TestAssociatorDDoSProtection(t *testing.T) {
 	type args struct {
-		dimensionRegexps []*regexp.Regexp
+		dimensionRegexps []model.DimensionsRegexp
 		resources        []*model.TaggedResource
 		metric           *model.Metric
 	}
@@ -44,12 +55,12 @@ func TestAssociatorDDoSProtection(t *testing.T) {
 		{
 			name: "should match with ResourceArn dimension",
 			args: args{
-				dimensionRegexps: config.SupportedServices.GetService("AWS/DDoSProtection").DimensionRegexps,
+				dimensionRegexps: config.SupportedServices.GetService("AWS/DDoSProtection").ToModelDimensionsRegexp(),
 				resources:        protectedResources,
 				metric: &model.Metric{
 					Namespace:  "AWS/DDoSProtection",
 					MetricName: "CPUUtilization",
-					Dimensions: []*model.Dimension{
+					Dimensions: []model.Dimension{
 						{Name: "ResourceArn", Value: "arn:aws:ec2:us-east-1:123456789012:instance/i-abc123"},
 					},
 				},
@@ -61,7 +72,7 @@ func TestAssociatorDDoSProtection(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			associator := NewAssociator(logging.NewNopLogger(), tc.args.dimensionRegexps, tc.args.resources)
+			associator := NewAssociator(promslog.NewNopLogger(), tc.args.dimensionRegexps, tc.args.resources)
 			res, skip := associator.AssociateMetricToResource(tc.args.metric)
 			assert.Equal(t, tc.expectedSkip, skip)
 			assert.Equal(t, tc.expectedResource, res)
