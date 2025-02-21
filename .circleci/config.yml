@@ -2,7 +2,6 @@ version: 2.1
 
 aliases:
   - &executor $DOCKER_USER/base-executor:latest
-  - &docker-version 19.03.13
 
 jobs:
   build-and-push:
@@ -13,8 +12,7 @@ jobs:
           password: $DOCKER_PASS
     steps:
       - checkout
-      - setup_remote_docker:
-          version: *docker-version
+      - setup_remote_docker
       - run: |
           echo "$DOCKER_PASS" | docker login --username $DOCKER_USER --password-stdin
           docker build --build-arg GH_TOKEN=${GH_TOKEN} --no-cache -t $DOCKER_USER/$CIRCLE_PROJECT_REPONAME:$(echo $CIRCLE_SHA1 | cut -c -7) .
